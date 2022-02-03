@@ -21,14 +21,6 @@ func (s fsmState) String() string {
 		return "startState"
 	case fsmInit:
 		return "init"
-	case fsmWait:
-		return "waiting"
-	case fsmBootstrapping:
-		return "bootstrapping"
-	case fsmStarting:
-		return "starting"
-	case fsmActive:
-		return "active"
 	}
 	return fmt.Sprintf("state: %d", int(s))
 }
