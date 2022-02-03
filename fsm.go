@@ -13,10 +13,6 @@ type fsmState int
 const (
 	fsmStart         fsmState = 0 // "start"
 	fsmInit          fsmState = 1 // "init"
-	fsmWait          fsmState = 2 // "waiting"
-	fsmBootstrapping fsmState = 3 // "bootstrapping"
-	fsmStarting      fsmState = 4 // "starting"
-	fsmActive        fsmState = 5 // "active"
 )
 
 func (s fsmState) String() string {
