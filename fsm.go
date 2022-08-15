@@ -2,7 +2,10 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -19,14 +22,14 @@ const (
 	FSMInitState FSMStateType = 1 // "init"
 )
 
-func (s FSMStateType) String() string {
-	switch s {
+func (c FSMStateType) String() string {
+	switch c {
 	case FSMStartState:
-		return "startState"
+		return "fsm start state"
 	case FSMInitState:
-		return "init"
+		return "fsm init state"
 	}
-	return fmt.Sprintf("unknown_state: %d", int(s))
+	return "not a valid state"
 }
 
 ////// EVENTS ///////
@@ -62,12 +65,11 @@ type FSM struct {
 	fsmCurrentState         FSMStateType
 	fsmCurrentEvent         FSMEventType
 	fsmConfig               map[string]string
-	FSMStateTypeTransitions map[FSMStateType]map[FSMEventType]func(*FSM) (FSMStateType, error)
+	FSMStateTypeTransitions map[FSMStateType]map[FSMEventType]func(*FSM) error
 }
 
 func (fsm *FSM) initFSM() *FSM {
 	if fsm != nil {
-		// this is to make it singleton
 		return fsm
 	}
 	return &FSM{
@@ -75,10 +77,16 @@ func (fsm *FSM) initFSM() *FSM {
 		fsmExternalEvents: make(chan FSMEventType),
 		fsmCurrentEvent:   fsmEvtEntry,
 		fsmCurrentState:   FSMStartState,
-		FSMStateTypeTransitions: map[FSMStateType]map[FSMEventType]func(*FSM) (FSMStateType, error){
-			/* STATE // EVENTS: ENTRY,                ABORT,               FAULT */
-			FSMStartState: {fsmEvtEntry: StartEntry, fsmAbort: StartAbort, fsmFault: StartAbort},
-			FSMInitState:  {fsmEvtEntry: InitEntry, fsmAbort: InitAbort, fsmFault: InitAbort},
+		FSMStateTypeTransitions: map[FSMStateType]map[FSMEventType]func(*FSM) error{
+			/* STATE */
+			FSMStartState: { // EVENTS ===>    ENTRY       ABORT      FAULT
+				fsmEvtEntry: StartEntry, //    x            .            .
+				fsmAbort:    StartAbort, //    .            x            .
+				fsmFault:    StartAbort, //    .            .            x
+			},
+			FSMInitState: {
+				fsmEvtEntry: InitEntry, fsmAbort: InitAbort, fsmFault: InitAbort,
+			},
 		},
 		fsmConfig: map[string]string{},
 	}
@@ -102,9 +110,10 @@ func (fsm *FSM) InternalStateEvent(next FSMStateType, event FSMEventType) error 
 	fsm.fsmCurrentState = next
 	fsm.fsmMutex.Unlock()
 
-	fmt.Printf("State transitioning from:[%v][%v] to:[%v][%v]", oldState, oldEvent, next, event)
+	fmt.Printf("State transitioning from:[%v][%v] to:[%v][%v]",
+		oldState, oldEvent, next, event)
 	fsm.fsmInternalEvents <- event
-	time.Sleep(3 * time.Second)
+	time.Sleep(1 * time.Second)
 	return nil
 }
 
@@ -118,7 +127,7 @@ func (fsm *FSM) ExternalStateEvent(event FSMEventType) error {
 	}
 
 	fsm.fsmExternalEvents <- event
-	time.Sleep(3 * time.Second)
+	time.Sleep(1 * time.Second)
 	return nil
 }
 
@@ -131,7 +140,7 @@ func (fsm *FSM) RunThread() {
 		fsm = fsm.initFSM()
 		go func() {
 			fsm.fsmInternalEvents <- fsmEvtEntry
-			time.Sleep(3 * time.Second)
+			time.Sleep(1 * time.Second)
 		}()
 	}
 	for {
@@ -143,12 +152,11 @@ func (fsm *FSM) RunThread() {
 			next := fsm.fsmCurrentState
 			fsm.fsmMutex.Unlock()
 
-			f, ok := fsm.FSMStateTypeTransitions[next][e]
-			if ok {
+			if f, ok := fsm.FSMStateTypeTransitions[next][e]; ok {
 				go f(fsm)
 			} else {
 				fmt.Println("fail to find FSM transition for state:", next)
-				time.Sleep(5 * time.Second)
+				time.Sleep(2 * time.Second)
 			}
 		case e := <-fsm.fsmExternalEvents:
 			fmt.Printf("event from external world:%v.\n", e)
@@ -156,12 +164,11 @@ func (fsm *FSM) RunThread() {
 			next := fsm.fsmCurrentState
 			fsm.fsmMutex.Unlock()
 
-			f, ok := fsm.FSMStateTypeTransitions[next][e]
-			if ok {
+			if f, ok := fsm.FSMStateTypeTransitions[next][e]; ok {
 				go f(fsm)
 			} else {
 				fmt.Println("fail to find FSM transition for state:", next)
-				time.Sleep(5 * time.Second)
+				time.Sleep(2 * time.Second)
 			}
 		case <-time.After(5 * time.Minute): // no process needed,
 			// this case of time.After() avoids !deadlock!
@@ -181,41 +188,49 @@ func (fsm *FSM) RunThread() {
 var gFSM *FSM
 
 func main() {
-	c := make(chan bool)
-	go gFSM.RunThread()
+	//c := make(chan bool)
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	fmt.Println("fsm demo")
-	done := <-c
-	fmt.Printf("done chan got %v \n", done)
+	go gFSM.RunThread()
+	fmt.Println("--------")
+	for {
+		select {
+		case s := <-sigs:
+			fmt.Println("Exiting on signal:", s)
+			return
+		}
+	}
 }
 
 /// STATE HANDLERS ///
 
 // StartEntry handles state = start, event= entry
-func StartEntry(f *FSM) (FSMStateType, error) {
+func StartEntry(f *FSM) error {
 	fmt.Println("startEntryHandler")
 	time.Sleep(10 * time.Second)
 	f.InternalStateEvent(FSMInitState, fsmEvtEntry)
-	return FSMStartState, nil
+	return nil
 }
 
 // StartAbort handles state= start, event=abort
-func StartAbort(f *FSM) (FSMStateType, error) {
+func StartAbort(f *FSM) error {
 	fmt.Println("startAbortHandler")
 	time.Sleep(10 * time.Second)
-	return FSMStartState, nil
+	return nil
 }
 
 // InitEntry handles state=init, event=entry
-func InitEntry(f *FSM) (FSMStateType, error) {
+func InitEntry(f *FSM) error {
 	fmt.Println("initEntryHandler")
 	time.Sleep(10 * time.Second)
 	f.InternalStateEvent(FSMStartState, fsmEvtEntry)
-	return FSMStartState, nil
+	return nil
 }
 
 // InitAbort handles state=init, event=abort
-func InitAbort(f *FSM) (FSMStateType, error) {
+func InitAbort(f *FSM) error {
 	fmt.Println("initAbortHandler")
 	time.Sleep(10 * time.Second)
-	return FSMStartState, nil
+	return nil
 }
